@@ -70,17 +70,17 @@ public:
 			m_fence[i] = 0;
 		}
 
+		// TODO: if we do manually the synchronization, I'm not sure size is important. It worths to investigate it.
+		// => bigger buffer => less sync
+		bind();
+
+		if (STRIDE <= 4)
+			glObjectLabel(GL_BUFFER, m_buffer_name, -1, "IBO");
+		else
+			glObjectLabel(GL_BUFFER, m_buffer_name, -1, "VBO");
+
 		if (m_buffer_storage)
 		{
-			// TODO: if we do manually the synchronization, I'm not sure size is important. It worths to investigate it.
-			// => bigger buffer => less sync
-			bind();
-
-			if (STRIDE <= 4)
-				glObjectLabel(GL_BUFFER, m_buffer_name, -1, "IBO");
-			else
-				glObjectLabel(GL_BUFFER, m_buffer_name, -1, "VBO");
-
 			// coherency will be done by flushing
 			const GLbitfield common_flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT;
 			const GLbitfield map_flags = common_flags | GL_MAP_FLUSH_EXPLICIT_BIT;
@@ -96,6 +96,7 @@ public:
 		}
 		else
 		{
+			glBufferData(m_target, STRIDE * m_limit, NULL, GL_DYNAMIC_DRAW);
 			m_buffer_ptr = nullptr;
 		}
 	}
@@ -112,43 +113,9 @@ public:
 		glDeleteBuffers(1, &m_buffer_name);
 	}
 
-	void allocate() { allocate(m_limit); }
-
-	void allocate(size_t new_limit)
-	{
-		if (!m_buffer_storage)
-		{
-			m_start = 0;
-			m_limit = new_limit;
-			glBufferData(m_target, m_limit * STRIDE, NULL, GL_STREAM_DRAW);
-		}
-	}
-
-
 	void bind()
 	{
 		glBindBuffer(m_target, m_buffer_name);
-	}
-
-	void subdata_upload(const void* src)
-	{
-		// Current GPU buffer is really too small need to allocate a new one
-		if (m_count > m_limit)
-		{
-			//fprintf(stderr, "Allocate a new buffer\n %d", STRIDE);
-			allocate(std::max<int>(m_count * 3 / 2, m_limit));
-		}
-		else if (m_count > (m_limit - m_start))
-		{
-			//fprintf(stderr, "Orphan the buffer %d\n", STRIDE);
-
-			// Not enough left free room. Just go back at the beginning
-			m_start = 0;
-			// Orphan the buffer to avoid synchronization
-			allocate(m_limit);
-		}
-
-		glBufferSubData(m_target, STRIDE * m_start, STRIDE * m_count, src);
 	}
 
 	void* map(size_t count)
@@ -160,12 +127,6 @@ public:
 
 		size_t offset = m_start * STRIDE;
 		size_t length = m_count * STRIDE;
-
-		if (!m_buffer_storage)
-		{
-			m_buffer_ptr = new uint8_t[length];
-			return m_buffer_ptr;
-		}
 
 		if (m_count > (m_limit - m_start))
 		{
@@ -230,7 +191,14 @@ public:
 			}
 		}
 
-		return m_buffer_ptr + offset;
+		if (m_buffer_storage)
+		{
+			return m_buffer_ptr + offset;
+		}
+		else
+		{
+			return glMapBufferRange(m_target, offset, length, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+		}
 	}
 
 	void unmap()
@@ -241,8 +209,7 @@ public:
 		}
 		else
 		{
-			subdata_upload(m_buffer_ptr);
-			delete[] m_buffer_ptr;
+			glUnmapBuffer(m_target);
 		}
 	}
 
@@ -251,17 +218,9 @@ public:
 #ifdef ENABLE_OGL_DEBUG_MEM_BW
 		g_vertex_upload_byte += count * STRIDE;
 #endif
-		if (m_buffer_storage)
-		{
-			void* dst = map(count);
-			memcpy(dst, src, count * STRIDE);
-			unmap();
-		}
-		else
-		{
-			m_count = count;
-			subdata_upload(src);
-		}
+		void* dst = map(count);
+		memcpy(dst, src, count * STRIDE);
+		unmap();
 	}
 
 	void EndScene()
@@ -318,9 +277,6 @@ public:
 
 		m_vb->bind();
 		m_ib->bind();
-
-		m_vb->allocate();
-		m_ib->allocate();
 
 		set_internal_format();
 	}
